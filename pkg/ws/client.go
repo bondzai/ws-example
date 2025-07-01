@@ -1,0 +1,108 @@
+package ws
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/gofiber/contrib/websocket"
+)
+
+// Client represents a single WebSocket connection.
+type Client struct {
+	// ID is a unique identifier for the client (e.g., extracted from a query parameter).
+	ID string
+	// Conn is the underlying WebSocket connection.
+	Conn *websocket.Conn
+	// Send is a buffered channel of outbound messages.
+	Send chan []byte
+	// handler holds the parent WSHandler.
+	handler *WSHandler
+}
+
+// NewClient creates a new Client instance.
+// It extracts the client ID from the query parameter "id".
+func NewClient(conn *websocket.Conn, handler *WSHandler) *Client {
+	clientID := conn.Query("id")
+	return &Client{
+		ID:      clientID,
+		Conn:    conn,
+		Send:    make(chan []byte, 256),
+		handler: handler,
+	}
+}
+
+// Listen starts the read and write pumps.
+func (c *Client) Listen() {
+	go c.writePump()
+	c.readPump()
+}
+
+// readPump continuously reads messages from the WebSocket connection.
+func (c *Client) readPump() {
+	defer func() {
+		if c.handler.OnClose != nil {
+			c.handler.OnClose(c)
+		}
+		c.handler.hub.Unregister <- c
+		c.Conn.Close()
+	}()
+
+	for {
+		messageType, message, err := c.Conn.ReadMessage()
+		if err != nil {
+			log.Println("read error:", err)
+			break
+		}
+		if c.handler.OnMessage != nil {
+			c.handler.OnMessage(c, messageType, message)
+		}
+		// Auto sync: if enabled, automatically forward this message to other clients with the same ID.
+		if c.handler.AutoSync {
+			c.handler.SyncMessage(context.Background(), c, message)
+		}
+	}
+}
+
+// writePump sends messages from the send channel and periodically pings the client.
+func (c *Client) writePump() {
+	pingInterval := c.handler.PingInterval
+	if pingInterval == 0 {
+		pingInterval = 30 * time.Second
+	}
+	ticker := time.NewTicker(pingInterval)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.Send:
+			if !ok {
+				// The channel was closed.
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Println("write error:", err)
+				return
+			}
+		case <-ticker.C:
+			// Send a ping message.
+			if err := c.Conn.WriteMessage(websocket.PingMessage, []byte("ping")); err != nil {
+				log.Println("ping error:", err)
+				return
+			}
+		}
+	}
+}
+
+// SendMessage writes a message directly to the client's send channel.
+func (c *Client) SendMessage(message []byte) {
+	select {
+	case c.Send <- message:
+	default:
+		log.Println("send channel full, dropping message")
+	}
+}
