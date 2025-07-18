@@ -40,12 +40,12 @@ func (h *userWebsocketHandler) handleConnection(c *ws.Client) {
 		ActiveUsers: userCount,
 	})
 
-	h.handler.Broadcast(response)
+	h.handler.BroadcastToRoom(c.RoomID, response)
 }
 
 func (h *userWebsocketHandler) handleMessage(c *ws.Client, messageType int, data []byte) {
 	log.Printf("user %s sent: %s", c.ID, data)
-	c.SendMessage([]byte("user message received"))
+	h.handler.BroadcastToRoom(c.RoomID, data)
 }
 
 func (h *userWebsocketHandler) handleDisconnection(c *ws.Client) {
@@ -54,5 +54,5 @@ func (h *userWebsocketHandler) handleDisconnection(c *ws.Client) {
 		ActiveUsers: userCount,
 	})
 
-	h.handler.Broadcast(response)
+	h.handler.BroadcastToRoom(c.RoomID, response)
 }

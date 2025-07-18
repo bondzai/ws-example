@@ -18,17 +18,21 @@ type Client struct {
 	Send chan []byte
 	// handler holds the parent WSHandler.
 	handler *WSHandler
+	RoomID  string // Add RoomID to track which room the client is in
 }
 
 // NewClient creates a new Client instance.
 // It extracts the client ID from the query parameter "id".
 func NewClient(conn *websocket.Conn, handler *WSHandler) *Client {
-	clientID := conn.Query("id")
+	clientID := conn.Query("userId")
+	roomID := conn.Query("roomId")
+
 	return &Client{
 		ID:      clientID,
 		Conn:    conn,
 		Send:    make(chan []byte, 256),
 		handler: handler,
+		RoomID:  roomID, // Set RoomID
 	}
 }
 
