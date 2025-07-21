@@ -1,49 +1,75 @@
 package config
 
 import (
-	"fmt"
-	"strings"
+	"log"
 
 	"github.com/spf13/viper"
 )
 
 // Config holds the application's configuration.
 type Config struct {
-	HttpPort string      `mapstructure:"http_port"`
-	BaseUrl  string      `mapstructure:"base_url"`
-	Redis    RedisConfig `mapstructure:"redis"`
+	AppName  string
+	HttpPort string
+	BaseUrl  string
+	Redis    RedisConfig
+	Mongo    MongoConfig
 }
 
 // RedisConfig holds Redis-specific connection details.
 type RedisConfig struct {
-	URL      string `mapstructure:"url"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
+	URI      string
+	Password string
+	DB       int
 }
 
-// NewConfig initializes and loads the application configuration.
-func NewConfig() *Config {
-	// --- Set Default Values ---
-	viper.SetDefault("http_port", "8080")
-	viper.SetDefault("base_url", "http://localhost:8080")
-	viper.SetDefault("redis.url", "localhost:6379")
-	viper.SetDefault("redis.password", "")
-	viper.SetDefault("redis.db", 0)
+// MongoConfig holds MongoDB-specific connection details.
+type MongoConfig struct {
+	URI      string
+	Database string
+}
 
+// NewConfig initializes and loads the application configuration by explicitly
+// reading each key from the environment.
+func NewConfig() *Config {
 	// --- Load Configuration from .env and Environment Variables ---
 	viper.SetConfigFile(".env")
 	viper.SetConfigType("env")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// Read the config file if it exists.
-	_ = viper.ReadInConfig()
-
-	// Unmarshal the configuration into the Config struct.
-	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
-		panic(fmt.Errorf("unable to decode config into struct: %v", err))
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			log.Println("Info: .env file not found. Using environment variables.")
+		} else {
+			log.Printf("Warning: Could not read .env file: %s", err)
+		}
 	}
 
-	return &cfg
+	// This allows Viper to read environment variables directly.
+	viper.AutomaticEnv()
+
+	// --- Explicitly Read and Populate Config ---
+	cfg := &Config{
+		AppName:  getEnv("APP_NAME", "WebSocketApp"),
+		HttpPort: getEnv("HTTP_PORT", "8080"),
+		BaseUrl:  getEnv("BASE_URL", "http://localhost:8080"),
+		Redis: RedisConfig{
+			URI:      getEnv("REDIS_URL", "localhost:6379"),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       viper.GetInt("REDIS_DB"), // Defaults to 0 if not set
+		},
+		Mongo: MongoConfig{
+			URI:      getEnv("MONGO_URI", "mongodb://localhost:27017"),
+			Database: getEnv("MONGO_DATABASE", "chat_db"),
+		},
+	}
+
+	return cfg
+}
+
+// getEnv is a helper to read an environment variable or return a default value.
+func getEnv(key, defaultValue string) string {
+	if value := viper.GetString(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

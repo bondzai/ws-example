@@ -7,7 +7,6 @@ toolchain go1.23.6
 require (
 	github.com/gofiber/contrib/websocket v1.3.3
 	github.com/gofiber/fiber/v2 v2.52.6
-	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/spf13/viper v1.19.0
@@ -23,6 +22,7 @@ require (
 	github.com/fasthttp/websocket v1.5.8 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
@@ -36,6 +36,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect

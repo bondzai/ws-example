@@ -1,36 +1,60 @@
 package main
 
 import (
+	"context"
+	"log"
+
 	"api-gateway/config"
 	"api-gateway/internal/handlers"
 	"api-gateway/internal/infrastructures"
 	"api-gateway/internal/repositories"
 	"api-gateway/internal/usecases"
-	"log"
+	"api-gateway/pkg/ws"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func main() {
-	// Load application configuration
 	conf := config.NewConfig()
 
-	// Initialize dependencies
-	redisClient := infrastructures.NewRedis(conf.Redis.URL, conf.Redis.Password, conf.Redis.DB)
-	userRepository := repositories.NewUserRepository()
-	userUseCase := usecases.NewUserUseCase(userRepository)
+	redisClient := infrastructures.NewRedis(conf.Redis.URI, conf.Redis.Password, conf.Redis.DB)
 
-	// Inject dependencies into the handler
-	userWsHandler := handlers.NewUserWebsocketHandler(userUseCase, redisClient)
+	mongoClient, err := mongo.Connect(
+		context.Background(),
+		options.Client().ApplyURI(conf.Mongo.URI),
+	)
+	if err != nil {
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
 
-	// Set up the Fiber application
+	err = mongoClient.Ping(context.Background(), nil)
+	if err != nil {
+		log.Fatalf("Failed to ping MongoDB: %v", err)
+	}
+
+	mongoDB := mongoClient.Database(conf.Mongo.Database)
+
+	userRepository := repositories.NewMockUserRepository()
+	messageRepository := repositories.NewMongoMessageRepository(mongoDB)
+
+	wsHandler := ws.NewWSHandler(
+		ws.WithRedis(redisClient),
+		ws.WithAutoSync(true),
+	)
+
+	_ = usecases.NewChatUseCase(userRepository, messageRepository, wsHandler)
+
+	chatHandler := handlers.NewChatHandler(wsHandler)
+
 	app := infrastructures.NewFiber()
 
 	v1 := app.Group("/api/v1")
 	{
-		ws := v1.Group("/ws")
-		ws.Get("/chat", userWsHandler)
+		wsGroup := v1.Group("/ws")
+		wsGroup.Get("/chat", chatHandler)
 	}
 
-	// Start the server
 	log.Printf("Server is running on port: %s", conf.HttpPort)
 	log.Fatal(app.Listen(":" + conf.HttpPort))
 }

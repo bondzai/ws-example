@@ -1,7 +1,6 @@
 package ws
 
 import (
-	"context"
 	"log"
 	"time"
 
@@ -63,15 +62,15 @@ func (c *Client) readPump() {
 	for {
 		messageType, message, err := c.Conn.ReadMessage()
 		if err != nil {
-			log.Println("read error:", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("read error: %v", err)
+			}
 			break
 		}
 
-		// If auto-sync is enabled, publish the message to the broker for all nodes to receive.
-		// Otherwise, handle the message locally. This prevents duplicate messages.
-		if c.handler.config.EnableAutoSync {
-			c.handler.SyncMessage(context.Background(), c, message)
-		} else if c.handler.OnMessage != nil {
+		// Always delegate the message to the OnMessage handler (the ChatUseCase).
+		// The use case is responsible for saving the message and deciding how to broadcast it.
+		if c.handler.OnMessage != nil {
 			c.handler.OnMessage(c, messageType, message)
 		}
 	}
