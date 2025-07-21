@@ -66,12 +66,13 @@ func (c *Client) readPump() {
 			log.Println("read error:", err)
 			break
 		}
-		if c.handler.OnMessage != nil {
-			c.handler.OnMessage(c, messageType, message)
-		}
-		// Auto sync: if enabled, automatically forward this message to other clients with the same ID.
+
+		// If auto-sync is enabled, publish the message to the broker for all nodes to receive.
+		// Otherwise, handle the message locally. This prevents duplicate messages.
 		if c.handler.config.EnableAutoSync {
 			c.handler.SyncMessage(context.Background(), c, message)
+		} else if c.handler.OnMessage != nil {
+			c.handler.OnMessage(c, messageType, message)
 		}
 	}
 }

@@ -6,10 +6,10 @@ import (
 	"api-gateway/pkg/ws"
 	"encoding/json"
 	"log"
-	"time"
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 type userWebsocketHandler struct {
@@ -17,18 +17,16 @@ type userWebsocketHandler struct {
 	usecase usecases.UserUseCase
 }
 
-func NewUserWebsocketHandler(usecase usecases.UserUseCase) fiber.Handler {
-	userHandler, err := ws.NewWSHandler(
-		ws.WithPingInterval(30*time.Second),
-		ws.WithPongWait(60*time.Second),
-		ws.WithWriteWait(10*time.Second),
-		ws.WithMaxMessageSize(512),
-		ws.WithBufferSize(256),
-		ws.WithAutoSync(false),
-	)
+func NewUserWebsocketHandler(usecase usecases.UserUseCase, redisClient *redis.Client) fiber.Handler {
+	redisBroker, err := ws.NewRedisMessageBroker(redisClient)
 	if err != nil {
-		log.Fatalf("Failed to create websocket handler: %v", err)
+		log.Fatalf("Failed to create Redis message broker: %v", err)
 	}
+
+	userHandler := ws.NewWSHandler(
+		ws.WithMessageBroker(redisBroker),
+		ws.WithAutoSync(true),
+	)
 
 	h := &userWebsocketHandler{
 		handler: userHandler,

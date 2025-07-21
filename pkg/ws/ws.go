@@ -116,47 +116,42 @@ type SyncMessage struct {
 }
 
 // NewWSHandler initializes a new WSHandler with its hub and message broker.
-func NewWSHandler(opts ...Option) (*WSHandler, error) {
-	// Start with the default configuration
-	config := WSConfig{
-		PingInterval:   30 * time.Second,
-		PongWait:       60 * time.Second,
-		WriteWait:      10 * time.Second,
-		MaxMessageSize: 512,
-		BufferSize:     256,
-		EnableAutoSync: false,
-		SyncChannel:    "websocket_sync",
-		MessageBroker:  MessageBrokerConfig{Type: "noop"},
-	}
-
-	// Apply all the functional options to customize the configuration
-	for _, opt := range opts {
-		opt(&config)
-	}
-
-	// Create message broker
-	brokerManager, err := NewMessageBrokerManager(config.MessageBroker)
-	if err != nil {
-		return nil, err
-	}
-
+func NewWSHandler(opts ...Option) *WSHandler {
+	// Start with a default configuration
 	handler := &WSHandler{
 		hub:    NewHub(),
-		config: config,
-		broker: brokerManager.GetBroker(),
+		broker: NewNoOpMessageBroker(), // Default to no-op broker
+		config: WSConfig{
+			PingInterval:   30 * time.Second,
+			PongWait:       60 * time.Second,
+			WriteWait:      10 * time.Second,
+			MaxMessageSize: 512,
+			BufferSize:     256,
+			EnableAutoSync: false,
+			SyncChannel:    "websocket_sync",
+		},
+	}
+
+	// Apply all the functional options to customize the handler
+	for _, opt := range opts {
+		opt(handler)
 	}
 
 	go handler.hub.Run()
 
-	// Subscribe to sync messages if auto-sync is enabled
-	if config.EnableAutoSync {
-		err = handler.broker.Subscribe(context.Background(), config.SyncChannel, handler.handleSyncMessage)
-		if err != nil {
-			log.Printf("Failed to subscribe to sync channel: %v", err)
+	// Subscribe to sync messages if auto-sync is enabled.
+	if handler.config.EnableAutoSync {
+		if handler.broker.GetType() == "noop" {
+			log.Println("Warning: Auto-sync is enabled, but no message broker is configured. Sync will not work.")
+		} else {
+			err := handler.broker.Subscribe(context.Background(), handler.config.SyncChannel, handler.handleSyncMessage)
+			if err != nil {
+				log.Printf("Failed to subscribe to sync channel: %v", err)
+			}
 		}
 	}
 
-	return handler, nil
+	return handler
 }
 
 // handleSyncMessage processes incoming sync messages from other nodes
@@ -170,12 +165,10 @@ func (h *WSHandler) handleSyncMessage(data []byte) {
 	h.hub.mu.Lock()
 	defer h.hub.mu.Unlock()
 
-	// Forward message to clients in the same room (excluding the sender)
+	// Forward message to all clients in the same room.
 	if room, ok := h.hub.Rooms[syncMsg.RoomID]; ok {
 		for client := range room.Clients {
-			if client.ID != syncMsg.ClientID {
-				client.SendMessage(syncMsg.Data)
-			}
+			client.SendMessage(syncMsg.Data)
 		}
 	}
 }

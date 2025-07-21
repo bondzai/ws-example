@@ -10,26 +10,27 @@ import (
 )
 
 func main() {
+	// Load application configuration
 	conf := config.NewConfig()
 
-	// Repositories
+	// Initialize dependencies
+	redisClient := infrastructures.NewRedis(conf.Redis.URL, conf.Redis.Password, conf.Redis.DB)
 	userRepository := repositories.NewUserRepository()
-
-	// UseCases
 	userUseCase := usecases.NewUserUseCase(userRepository)
 
-	// Handlers
-	userWsHandler := handlers.NewUserWebsocketHandler(userUseCase)
+	// Inject dependencies into the handler
+	userWsHandler := handlers.NewUserWebsocketHandler(userUseCase, redisClient)
 
+	// Set up the Fiber application
 	app := infrastructures.NewFiber()
 
 	v1 := app.Group("/api/v1")
-
 	{
 		ws := v1.Group("/ws")
 		ws.Get("/chat", userWsHandler)
 	}
 
+	// Start the server
 	log.Printf("Server is running on port: %s", conf.HttpPort)
 	log.Fatal(app.Listen(":" + conf.HttpPort))
 }
