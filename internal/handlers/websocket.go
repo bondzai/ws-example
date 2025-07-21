@@ -18,9 +18,17 @@ type userWebsocketHandler struct {
 }
 
 func NewUserWebsocketHandler(usecase usecases.UserUseCase) fiber.Handler {
-	userHandler := ws.NewWSHandler()
-	userHandler.PingInterval = 60 * time.Second
-	userHandler.AutoSync = true
+	userHandler, err := ws.NewWSHandler(
+		ws.WithPingInterval(30*time.Second),
+		ws.WithPongWait(60*time.Second),
+		ws.WithWriteWait(10*time.Second),
+		ws.WithMaxMessageSize(512),
+		ws.WithBufferSize(256),
+		ws.WithAutoSync(false),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create websocket handler: %v", err)
+	}
 
 	h := &userWebsocketHandler{
 		handler: userHandler,

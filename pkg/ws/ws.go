@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -61,7 +62,6 @@ func (h *Hub) Run() {
 					close(client.Send)
 					if len(room.Clients) == 0 {
 						delete(h.Rooms, client.RoomID)
-						log.Printf("[DEBUG] Room %s deleted (no clients left).", client.RoomID)
 					}
 				}
 			}
@@ -71,11 +71,6 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			room, ok := h.Rooms[roomMsg.RoomID]
 			if ok {
-				clientIDs := []string{}
-				for client := range room.Clients {
-					clientIDs = append(clientIDs, client.ID)
-				}
-				log.Printf("[DEBUG] Broadcasting to room %s. Clients: %v. Message: %s", roomMsg.RoomID, clientIDs, string(roomMsg.Message))
 				for client := range room.Clients {
 					select {
 					case client.Send <- roomMsg.Message:
@@ -84,68 +79,105 @@ func (h *Hub) Run() {
 						delete(room.Clients, client)
 					}
 				}
-			} else {
-				log.Printf("[DEBUG] Tried to broadcast to non-existent room %s.", roomMsg.RoomID)
 			}
 			h.mu.Unlock()
 		}
 	}
 }
 
+// WSConfig holds WebSocket configuration
+type WSConfig struct {
+	PingInterval   time.Duration
+	PongWait       time.Duration
+	WriteWait      time.Duration
+	MaxMessageSize int64
+	BufferSize     int
+	EnableAutoSync bool
+	SyncChannel    string
+	MessageBroker  MessageBrokerConfig
+}
+
 // WSHandler provides customizable callbacks and a hub for WebSocket events.
 type WSHandler struct {
-	hub          *Hub
-	OnConnect    func(c *Client)
-	OnMessage    func(c *Client, messageType int, data []byte)
-	OnClose      func(c *Client)
-	PingInterval time.Duration
-	// Sync is the sync adapter for cross-node message propagation.
-	// It is not coupled with any specific implementation.
-	Sync SyncAdapter
-	// AutoSync, when true, automatically syncs received messages to other clients with the same ID.
-	AutoSync bool
+	hub       *Hub
+	config    WSConfig
+	broker    MessageBroker
+	OnConnect func(c *Client)
+	OnMessage func(c *Client, messageType int, data []byte)
+	OnClose   func(c *Client)
 }
 
 // SyncMessage defines the structure for synchronization messages.
 type SyncMessage struct {
-	ClientID string
-	Data     []byte
+	ClientID string `json:"client_id"`
+	RoomID   string `json:"room_id"`
+	Data     []byte `json:"data"`
+	Type     string `json:"type"`
 }
 
-// SyncAdapter abstracts the pub/sub system used to sync messages across nodes.
-type SyncAdapter interface {
-	// Publish sends a sync message to the backend.
-	Publish(ctx context.Context, msg SyncMessage) error
-	// Subscribe starts listening for sync messages and calls handler on each message.
-	Subscribe(ctx context.Context, handler func(msg SyncMessage))
-}
-
-// NewWSHandler initializes a new WSHandler with its hub.
-// If a Sync adapter is provided, it subscribes to incoming sync messages.
-func NewWSHandler() *WSHandler {
-	handler := &WSHandler{
-		hub:          NewHub(),
-		PingInterval: 30 * time.Second,
-		AutoSync:     false, // default disabled; enable it for auto sync behavior
+// NewWSHandler initializes a new WSHandler with its hub and message broker.
+func NewWSHandler(opts ...Option) (*WSHandler, error) {
+	// Start with the default configuration
+	config := WSConfig{
+		PingInterval:   30 * time.Second,
+		PongWait:       60 * time.Second,
+		WriteWait:      10 * time.Second,
+		MaxMessageSize: 512,
+		BufferSize:     256,
+		EnableAutoSync: false,
+		SyncChannel:    "websocket_sync",
+		MessageBroker:  MessageBrokerConfig{Type: "noop"},
 	}
+
+	// Apply all the functional options to customize the configuration
+	for _, opt := range opts {
+		opt(&config)
+	}
+
+	// Create message broker
+	brokerManager, err := NewMessageBrokerManager(config.MessageBroker)
+	if err != nil {
+		return nil, err
+	}
+
+	handler := &WSHandler{
+		hub:    NewHub(),
+		config: config,
+		broker: brokerManager.GetBroker(),
+	}
+
 	go handler.hub.Run()
 
-	// If a Sync adapter is set, subscribe to sync messages.
-	if handler.Sync != nil {
-		handler.Sync.Subscribe(context.Background(), func(msg SyncMessage) {
-			handler.hub.mu.Lock()
-			defer handler.hub.mu.Unlock()
-			for _, room := range handler.hub.Rooms {
-				for client := range room.Clients {
-					if client.ID == msg.ClientID {
-						client.SendMessage(msg.Data)
-					}
-				}
-			}
-		})
+	// Subscribe to sync messages if auto-sync is enabled
+	if config.EnableAutoSync {
+		err = handler.broker.Subscribe(context.Background(), config.SyncChannel, handler.handleSyncMessage)
+		if err != nil {
+			log.Printf("Failed to subscribe to sync channel: %v", err)
+		}
 	}
 
-	return handler
+	return handler, nil
+}
+
+// handleSyncMessage processes incoming sync messages from other nodes
+func (h *WSHandler) handleSyncMessage(data []byte) {
+	var syncMsg SyncMessage
+	if err := json.Unmarshal(data, &syncMsg); err != nil {
+		log.Printf("Failed to unmarshal sync message: %v", err)
+		return
+	}
+
+	h.hub.mu.Lock()
+	defer h.hub.mu.Unlock()
+
+	// Forward message to clients in the same room (excluding the sender)
+	if room, ok := h.hub.Rooms[syncMsg.RoomID]; ok {
+		for client := range room.Clients {
+			if client.ID != syncMsg.ClientID {
+				client.SendMessage(syncMsg.Data)
+			}
+		}
+	}
 }
 
 // Handler returns a Fiber-compatible WebSocket handler function.
@@ -155,7 +187,8 @@ func (h *WSHandler) Handler(c *websocket.Conn) {
 	if h.OnConnect != nil {
 		h.OnConnect(client)
 	}
-	client.Listen() // Blocks until the connection closes.
+
+	client.Listen()
 }
 
 // BroadcastToRoom sends a message to all clients in a specific room.
@@ -168,29 +201,35 @@ func (h *WSHandler) Broadcast(message []byte) {
 	h.hub.Broadcast <- RoomMessage{RoomID: "all", Message: message}
 }
 
-// SyncMessage publishes a synchronization message using the provided Sync adapter.
-// If a Sync adapter is not configured, it falls back to locally forwarding the message
-// to all other clients with the same ID.
+// SyncMessage publishes a synchronization message using the configured message broker.
 func (h *WSHandler) SyncMessage(ctx context.Context, sender *Client, message []byte) {
-	if h.Sync != nil {
-		msg := SyncMessage{
-			ClientID: sender.ID,
-			Data:     message,
-		}
-		if err := h.Sync.Publish(ctx, msg); err != nil {
-			log.Println("failed to publish sync message:", err)
-		}
-	} else {
-		// Fallback: locally broadcast to all clients with the same ID in the same room, excluding sender.
-		h.hub.mu.Lock()
-		defer h.hub.mu.Unlock()
-		room, ok := h.hub.Rooms[sender.RoomID]
-		if ok {
-			for client := range room.Clients {
-				if client.ID == sender.ID && client != sender {
-					client.SendMessage(message)
-				}
-			}
-		}
+	if !h.config.EnableAutoSync {
+		return
 	}
+
+	syncMsg := SyncMessage{
+		ClientID: sender.ID,
+		RoomID:   sender.RoomID,
+		Data:     message,
+		Type:     "message",
+	}
+
+	if err := h.broker.Publish(ctx, h.config.SyncChannel, syncMsg); err != nil {
+		log.Printf("Failed to publish sync message: %v", err)
+	}
+}
+
+// Close closes the WebSocket handler and message broker
+func (h *WSHandler) Close() error {
+	return h.broker.Close()
+}
+
+// GetConfig returns the WebSocket configuration
+func (h *WSHandler) GetConfig() WSConfig {
+	return h.config
+}
+
+// GetBroker returns the message broker
+func (h *WSHandler) GetBroker() MessageBroker {
+	return h.broker
 }

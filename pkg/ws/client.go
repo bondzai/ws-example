@@ -30,7 +30,7 @@ func NewClient(conn *websocket.Conn, handler *WSHandler) *Client {
 	return &Client{
 		ID:      clientID,
 		Conn:    conn,
-		Send:    make(chan []byte, 256),
+		Send:    make(chan []byte, handler.config.BufferSize),
 		handler: handler,
 		RoomID:  roomID, // Set RoomID
 	}
@@ -52,6 +52,14 @@ func (c *Client) readPump() {
 		c.Conn.Close()
 	}()
 
+	// Set read deadline
+	c.Conn.SetReadLimit(c.handler.config.MaxMessageSize)
+	c.Conn.SetReadDeadline(time.Now().Add(c.handler.config.PongWait))
+	c.Conn.SetPongHandler(func(string) error {
+		c.Conn.SetReadDeadline(time.Now().Add(c.handler.config.PongWait))
+		return nil
+	})
+
 	for {
 		messageType, message, err := c.Conn.ReadMessage()
 		if err != nil {
@@ -62,7 +70,7 @@ func (c *Client) readPump() {
 			c.handler.OnMessage(c, messageType, message)
 		}
 		// Auto sync: if enabled, automatically forward this message to other clients with the same ID.
-		if c.handler.AutoSync {
+		if c.handler.config.EnableAutoSync {
 			c.handler.SyncMessage(context.Background(), c, message)
 		}
 	}
@@ -70,7 +78,7 @@ func (c *Client) readPump() {
 
 // writePump sends messages from the send channel and periodically pings the client.
 func (c *Client) writePump() {
-	pingInterval := c.handler.PingInterval
+	pingInterval := c.handler.config.PingInterval
 	if pingInterval == 0 {
 		pingInterval = 30 * time.Second
 	}
@@ -83,6 +91,7 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case message, ok := <-c.Send:
+			c.Conn.SetWriteDeadline(time.Now().Add(c.handler.config.WriteWait))
 			if !ok {
 				// The channel was closed.
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
@@ -94,6 +103,7 @@ func (c *Client) writePump() {
 			}
 		case <-ticker.C:
 			// Send a ping message.
+			c.Conn.SetWriteDeadline(time.Now().Add(c.handler.config.WriteWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, []byte("ping")); err != nil {
 				log.Println("ping error:", err)
 				return
@@ -109,4 +119,19 @@ func (c *Client) SendMessage(message []byte) {
 	default:
 		log.Println("send channel full, dropping message")
 	}
+}
+
+// GetID returns the client ID
+func (c *Client) GetID() string {
+	return c.ID
+}
+
+// GetRoomID returns the client's room ID
+func (c *Client) GetRoomID() string {
+	return c.RoomID
+}
+
+// GetHandler returns the WebSocket handler
+func (c *Client) GetHandler() *WSHandler {
+	return c.handler
 }
