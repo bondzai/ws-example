@@ -29,7 +29,7 @@ type ChatUseCase interface {
 	UserDisconnected(ctx context.Context, userID, roomID string) error
 
 	// ProcessMessage handles an incoming message from a user, saves it, and broadcasts it.
-	ProcessMessage(ctx context.Context, userID, roomID string, content string) error
+	ProcessMessage(ctx context.Context, userID, roomID string, message []byte) error
 }
 
 type chatUseCase struct {
@@ -52,9 +52,17 @@ func NewChatUseCase(
 
 // toMessageResponse converts a message entity to a message DTO, enriching it with user details.
 func (uc *chatUseCase) toMessageResponse(ctx context.Context, msg *entities.Message) (*entities.MessageResponse, error) {
-	user, err := uc.userRepo.FindByID(ctx, msg.UserID)
-	if err != nil {
-		return nil, err
+	var user *entities.User
+	var err error
+
+	// Handle system messages, which don't have a user in the repository.
+	if msg.UserID == "system" {
+		user = &entities.User{ID: "system", Username: "System"}
+	} else {
+		user, err = uc.userRepo.FindByID(ctx, msg.UserID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &entities.MessageResponse{
@@ -67,6 +75,8 @@ func (uc *chatUseCase) toMessageResponse(ctx context.Context, msg *entities.Mess
 		Content:   msg.Content,
 		Timestamp: msg.Timestamp,
 		IsRead:    msg.IsRead,
+		Type:      msg.Type,
+		Metadata:  msg.Metadata,
 	}, nil
 }
 
@@ -89,6 +99,25 @@ func (uc *chatUseCase) UserConnected(ctx context.Context, userID, roomID string)
 		}
 		history = append(history, dto)
 	}
+
+	// Notify others that a user has joined.
+	user, err := uc.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		log.Printf("Could not find user %s: %v", userID, err)
+		return history, err
+	}
+
+	joinMsg := &entities.MessageResponse{
+		ID:        primitive.NewObjectID(),
+		Event:     "user-joined",
+		RoomID:    roomID,
+		UserID:    "system",
+		Username:  "System",
+		Content:   user.Username + " has joined the room.",
+		Timestamp: time.Now(),
+	}
+	payload, _ := json.Marshal(joinMsg)
+	uc.broadcaster.BroadcastToRoom(roomID, payload)
 
 	return history, nil
 }
@@ -116,11 +145,18 @@ func (uc *chatUseCase) UserDisconnected(ctx context.Context, userID, roomID stri
 	return nil
 }
 
+// IncomingMessage represents the structure of a message received from a client.
+type IncomingMessage struct {
+	Type     string                 `json:"type"`
+	Content  string                 `json:"content,omitempty"`
+	Metadata *entities.FileMetadata `json:"metadata,omitempty"`
+}
+
 // ProcessMessage handles incoming chat messages.
-func (uc *chatUseCase) ProcessMessage(ctx context.Context, userID, roomID, content string) error {
-	_, err := uc.userRepo.FindByID(ctx, userID)
-	if err != nil {
-		log.Printf("Could not find user %s: %v", userID, err)
+func (uc *chatUseCase) ProcessMessage(ctx context.Context, userID, roomID string, rawMessage []byte) error {
+	var incomingMsg IncomingMessage
+	if err := json.Unmarshal(rawMessage, &incomingMsg); err != nil {
+		log.Printf("Failed to unmarshal incoming message: %v", err)
 		return err
 	}
 
@@ -129,7 +165,9 @@ func (uc *chatUseCase) ProcessMessage(ctx context.Context, userID, roomID, conte
 		ID:        primitive.NewObjectID(),
 		RoomID:    roomID,
 		UserID:    userID,
-		Content:   content,
+		Type:      incomingMsg.Type,
+		Content:   incomingMsg.Content,  // For text messages
+		Metadata:  incomingMsg.Metadata, // For file messages
 		Timestamp: time.Now(),
 		IsRead:    false,
 	}

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"path/filepath"
 
 	"api-gateway/config"
 	"api-gateway/internal/handlers"
 	"api-gateway/internal/infrastructures"
 	"api-gateway/internal/repositories"
 	"api-gateway/internal/usecases"
+	"api-gateway/pkg/filestorage"
 	"api-gateway/pkg/ws"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -40,24 +42,44 @@ func main() {
 
 	mongoDB := mongoClient.Database(conf.Mongo.Database)
 
+	// --- Repositories ---
 	userRepository := repositories.NewMockUserRepository()
 	messageRepository := repositories.NewMongoMessageRepository(mongoDB)
 
-	chatBroadcaster := ws.NewConnectionManager(
+	// --- File Storage ---
+	uploadsPath, _ := filepath.Abs("./uploads")
+	fileStorage, err := filestorage.NewLocalStorage(uploadsPath, conf.BaseUrl+"/files")
+	if err != nil {
+		log.Fatalf("Failed to create file storage: %v", err)
+	}
+
+	// --- WebSockets ---
+	connManager := ws.NewConnectionManager(
 		ws.WithRedis(redisClient),
 		ws.WithAutoSync(true),
 	)
 
-	chatUseCase := usecases.NewChatUseCase(userRepository, messageRepository, chatBroadcaster)
+	// --- Use Cases ---
+	chatUseCase := usecases.NewChatUseCase(userRepository, messageRepository, connManager)
+	fileUploadUseCase := usecases.NewFileUploadUseCase(fileStorage)
 
-	chatHandler := handlers.NewChatHandler(chatUseCase, chatBroadcaster)
+	// --- Handlers ---
+	chatHandler := handlers.NewChatHandler(chatUseCase, connManager)
+	fileUploadHandler := handlers.NewFileUploadHandler(fileUploadUseCase)
 
 	app := infrastructures.NewFiber()
 
+	// --- Static File Server ---
+	app.Static("/files", uploadsPath)
+
+	// --- API Routes ---
 	v1 := app.Group("/api/v1")
 	{
 		wsGroup := v1.Group("/ws")
 		wsGroup.Get("/chat", chatHandler.ServeWS)
+
+		fileGroup := v1.Group("/files")
+		fileGroup.Post("/upload", fileUploadHandler.UploadFile)
 	}
 
 	log.Printf("Server is running on port: %s", conf.HttpPort)

@@ -15,6 +15,16 @@ type Message struct {
 	Content   string             `bson:"content" json:"content"`
 	Timestamp time.Time          `bson:"timestamp" json:"timestamp"`
 	IsRead    bool               `bson:"is_read" json:"isRead"`
+	Type      string             `bson:"type" json:"type"` // "text" or "file"
+	Metadata  *FileMetadata      `bson:"metadata,omitempty" json:"metadata,omitempty"`
+}
+
+// FileMetadata holds information about an uploaded file.
+type FileMetadata struct {
+	URL      string `bson:"url" json:"url"`
+	FileName string `bson:"file_name" json:"fileName"`
+	FileSize int64  `bson:"file_size" json:"fileSize"`
+	MIMEType string `bson:"mime_type" json:"mimeType"`
 }
 
 // MessageResponse is a DTO for sending message data to clients.
@@ -29,4 +39,6 @@ type MessageResponse struct {
 	Content   string             `json:"content"`
 	Timestamp time.Time          `json:"timestamp"`
 	IsRead    bool               `json:"isRead"`
+	Type      string             `json:"type"`
+	Metadata  *FileMetadata      `json:"metadata,omitempty"`
 }
