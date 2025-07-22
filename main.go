@@ -18,7 +18,11 @@ import (
 func main() {
 	conf := config.NewConfig()
 
-	redisClient := infrastructures.NewRedis(conf.Redis.URI, conf.Redis.Password, conf.Redis.DB)
+	redisClient := infrastructures.NewRedis(
+		conf.Redis.URI,
+		conf.Redis.Password,
+		conf.Redis.DB,
+	)
 
 	mongoClient, err := mongo.Connect(
 		context.Background(),
