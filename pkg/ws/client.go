@@ -15,14 +15,14 @@ type Client struct {
 	Conn *websocket.Conn
 	// Send is a buffered channel of outbound messages.
 	Send chan []byte
-	// handler holds the parent WSHandler.
-	handler *WSHandler
+	// handler holds the parent ConnectionManager.
+	handler *ConnectionManager
 	RoomID  string // Add RoomID to track which room the client is in
 }
 
 // NewClient creates a new Client instance.
 // It extracts the client ID from the query parameter "id".
-func NewClient(conn *websocket.Conn, handler *WSHandler) *Client {
+func NewClient(conn *websocket.Conn, handler *ConnectionManager) *Client {
 	clientID := conn.Query("userId")
 	roomID := conn.Query("roomId")
 
@@ -127,6 +127,6 @@ func (c *Client) GetRoomID() string {
 }
 
 // GetHandler returns the WebSocket handler
-func (c *Client) GetHandler() *WSHandler {
+func (c *Client) GetHandler() *ConnectionManager {
 	return c.handler
 }

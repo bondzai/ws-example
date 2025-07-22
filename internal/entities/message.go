@@ -21,6 +21,7 @@ type Message struct {
 // It includes user details, which are populated at runtime.
 type MessageResponse struct {
 	ID        primitive.ObjectID `json:"id"`
+	Event     string             `json:"event"`
 	RoomID    string             `json:"roomId"`
 	UserID    string             `json:"userId"`
 	Username  string             `json:"username"`

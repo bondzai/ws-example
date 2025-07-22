@@ -111,8 +111,8 @@ type WSConfig struct {
 	SyncChannel    string
 }
 
-// WSHandler provides a hub for WebSocket connections and acts as a broadcaster.
-type WSHandler struct {
+// ConnectionManager provides a hub for WebSocket connections and acts as a broadcaster.
+type ConnectionManager struct {
 	hub    *Hub
 	config WSConfig
 	broker MessageBroker
@@ -125,10 +125,10 @@ type SyncMessage struct {
 	Data     []byte `json:"data"`
 }
 
-// NewWSHandler initializes a new WSHandler with its hub and message broker.
-func NewWSHandler(opts ...Option) *WSHandler {
+// NewConnectionManager initializes a new ConnectionManager with its hub and message broker.
+func NewConnectionManager(opts ...Option) *ConnectionManager {
 	// Start with a default configuration
-	handler := &WSHandler{
+	manager := &ConnectionManager{
 		hub:    NewHub(),
 		broker: NewNoOpMessageBroker(), // Default to no-op broker
 		config: WSConfig{
@@ -144,28 +144,28 @@ func NewWSHandler(opts ...Option) *WSHandler {
 
 	// Apply all the functional options to customize the handler
 	for _, opt := range opts {
-		opt(handler)
+		opt(manager)
 	}
 
-	go handler.hub.Run()
+	go manager.hub.Run()
 
 	// Subscribe to sync messages if auto-sync is enabled.
-	if handler.config.EnableAutoSync {
-		if handler.broker.GetType() == "noop" {
+	if manager.config.EnableAutoSync {
+		if manager.broker.GetType() == "noop" {
 			log.Println("Warning: Auto-sync is enabled, but no message broker is configured. Sync will not work.")
 		} else {
-			err := handler.broker.Subscribe(context.Background(), handler.config.SyncChannel, handler.handleSyncMessage)
+			err := manager.broker.Subscribe(context.Background(), manager.config.SyncChannel, manager.handleSyncMessage)
 			if err != nil {
 				log.Printf("Failed to subscribe to sync channel: %v", err)
 			}
 		}
 	}
 
-	return handler
+	return manager
 }
 
 // handleSyncMessage processes incoming sync messages from other nodes
-func (h *WSHandler) handleSyncMessage(data []byte) {
+func (cm *ConnectionManager) handleSyncMessage(data []byte) {
 	var syncMsg SyncMessage
 	if err := json.Unmarshal(data, &syncMsg); err != nil {
 		log.Printf("Failed to unmarshal sync message: %v", err)
@@ -174,67 +174,67 @@ func (h *WSHandler) handleSyncMessage(data []byte) {
 
 	// If ClientID is present, it's a direct message. Otherwise, broadcast to the room.
 	if syncMsg.ClientID != "" {
-		h.hub.DirectMessage <- DirectMessage{ClientID: syncMsg.ClientID, Message: syncMsg.Data}
+		cm.hub.DirectMessage <- DirectMessage{ClientID: syncMsg.ClientID, Message: syncMsg.Data}
 	} else {
-		h.hub.Broadcast <- RoomMessage{RoomID: syncMsg.RoomID, Message: syncMsg.Data}
+		cm.hub.Broadcast <- RoomMessage{RoomID: syncMsg.RoomID, Message: syncMsg.Data}
 	}
 }
 
 // RegisterClient registers a client with the hub.
-func (h *WSHandler) RegisterClient(client *Client) {
-	h.hub.Register <- client
+func (cm *ConnectionManager) RegisterClient(client *Client) {
+	cm.hub.Register <- client
 }
 
 // UnregisterClient unregisters a client from the hub.
-func (h *WSHandler) UnregisterClient(client *Client) {
-	h.hub.Unregister <- client
+func (cm *ConnectionManager) UnregisterClient(client *Client) {
+	cm.hub.Unregister <- client
 }
 
 // BroadcastToRoom sends a message to all clients in a specific room.
 // If auto-sync is enabled, it publishes the message to the message broker.
-func (h *WSHandler) BroadcastToRoom(roomID string, message []byte) {
-	if h.config.EnableAutoSync {
+func (cm *ConnectionManager) BroadcastToRoom(roomID string, message []byte) {
+	if cm.config.EnableAutoSync {
 		syncMsg := SyncMessage{RoomID: roomID, Data: message}
-		if err := h.broker.Publish(context.Background(), h.config.SyncChannel, syncMsg); err != nil {
+		if err := cm.broker.Publish(context.Background(), cm.config.SyncChannel, syncMsg); err != nil {
 			log.Printf("Failed to publish sync message: %v", err)
 		}
 	} else {
-		h.hub.Broadcast <- RoomMessage{RoomID: roomID, Message: message}
+		cm.hub.Broadcast <- RoomMessage{RoomID: roomID, Message: message}
 	}
 }
 
 // SendMessage sends a message directly to a specific client by their ID.
-func (h *WSHandler) SendMessage(clientID string, message []byte) error {
-	if h.config.EnableAutoSync {
+func (cm *ConnectionManager) SendMessage(clientID string, message []byte) error {
+	if cm.config.EnableAutoSync {
 		syncMsg := SyncMessage{ClientID: clientID, RoomID: "", Data: message} // RoomID can be empty
-		if err := h.broker.Publish(context.Background(), h.config.SyncChannel, syncMsg); err != nil {
+		if err := cm.broker.Publish(context.Background(), cm.config.SyncChannel, syncMsg); err != nil {
 			log.Printf("Failed to publish direct sync message: %v", err)
 			return err
 		}
 	} else {
 		// Check if client is local before sending
-		h.hub.mu.Lock()
-		_, ok := h.hub.ClientsByID[clientID]
-		h.hub.mu.Unlock()
+		cm.hub.mu.Lock()
+		_, ok := cm.hub.ClientsByID[clientID]
+		cm.hub.mu.Unlock()
 		if !ok {
 			return errors.New("client not found")
 		}
-		h.hub.DirectMessage <- DirectMessage{ClientID: clientID, Message: message}
+		cm.hub.DirectMessage <- DirectMessage{ClientID: clientID, Message: message}
 	}
 	return nil
 }
 
 // Close closes the WebSocket handler and message broker
-func (h *WSHandler) Close() error {
-	return h.broker.Close()
+func (cm *ConnectionManager) Close() error {
+	return cm.broker.Close()
 }
 
 // GetConfig returns the WebSocket configuration
-func (h *WSHandler) GetConfig() WSConfig {
-	return h.config
+func (cm *ConnectionManager) GetConfig() WSConfig {
+	return cm.config
 }
 
 // GetBroker returns the message broker
-func (h *WSHandler) GetBroker() MessageBroker {
-	return h.broker
+func (cm *ConnectionManager) GetBroker() MessageBroker {
+	return cm.broker
 }

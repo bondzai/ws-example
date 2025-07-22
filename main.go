@@ -43,14 +43,14 @@ func main() {
 	userRepository := repositories.NewMockUserRepository()
 	messageRepository := repositories.NewMongoMessageRepository(mongoDB)
 
-	wsHandler := ws.NewWSHandler(
+	chatBroadcaster := ws.NewConnectionManager(
 		ws.WithRedis(redisClient),
 		ws.WithAutoSync(true),
 	)
 
-	chatUseCase := usecases.NewChatUseCase(userRepository, messageRepository, wsHandler)
+	chatUseCase := usecases.NewChatUseCase(userRepository, messageRepository, chatBroadcaster)
 
-	chatHandler := handlers.NewChatHandler(chatUseCase, wsHandler)
+	chatHandler := handlers.NewChatHandler(chatUseCase, chatBroadcaster)
 
 	app := infrastructures.NewFiber()
 

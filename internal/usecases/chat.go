@@ -59,6 +59,7 @@ func (uc *chatUseCase) toMessageResponse(ctx context.Context, msg *entities.Mess
 
 	return &entities.MessageResponse{
 		ID:        msg.ID,
+		Event:     "message",
 		RoomID:    msg.RoomID,
 		UserID:    msg.UserID,
 		Username:  user.Username,
@@ -79,42 +80,21 @@ func (uc *chatUseCase) UserConnected(ctx context.Context, userID, roomID string)
 		return nil, nil
 	}
 
-	// Convert message entities to DTOs.
 	var history []*entities.MessageResponse
 	for _, msg := range messages {
 		dto, err := uc.toMessageResponse(ctx, msg)
 		if err != nil {
 			log.Printf("Failed to convert message to DTO: %v", err)
-			continue // Skip messages that can't be converted
+			continue
 		}
 		history = append(history, dto)
 	}
-
-	// Notify others in the room that a new user has joined.
-	user, err := uc.userRepo.FindByID(ctx, userID)
-	if err != nil {
-		log.Printf("Could not find user %s: %v", userID, err)
-		return history, err
-	}
-
-	joinMsg := &entities.MessageResponse{
-		ID:        primitive.NewObjectID(),
-		RoomID:    roomID,
-		UserID:    "system", // System messages have a special ID
-		Username:  "System",
-		Content:   user.Username + " has joined the room.",
-		Timestamp: time.Now(),
-	}
-	payload, _ := json.Marshal(joinMsg)
-	uc.broadcaster.BroadcastToRoom(roomID, payload)
 
 	return history, nil
 }
 
 // UserDisconnected handles client disconnections.
 func (uc *chatUseCase) UserDisconnected(ctx context.Context, userID, roomID string) error {
-	log.Printf("User %s disconnected from room %s", userID, roomID)
-
 	user, err := uc.userRepo.FindByID(ctx, userID)
 	if err != nil {
 		log.Printf("Could not find user %s: %v", userID, err)
@@ -123,6 +103,7 @@ func (uc *chatUseCase) UserDisconnected(ctx context.Context, userID, roomID stri
 
 	leaveMsg := &entities.MessageResponse{
 		ID:        primitive.NewObjectID(),
+		Event:     "user-left",
 		RoomID:    roomID,
 		UserID:    "system",
 		Username:  "System",
@@ -158,7 +139,6 @@ func (uc *chatUseCase) ProcessMessage(ctx context.Context, userID, roomID, conte
 		return err
 	}
 
-	// Create a DTO for broadcasting, enriching the message with user data.
 	dto, err := uc.toMessageResponse(ctx, msg)
 	if err != nil {
 		log.Printf("Failed to create message DTO: %v", err)

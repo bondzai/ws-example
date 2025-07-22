@@ -13,15 +13,15 @@ import (
 
 // ChatHandler handles the WebSocket connections for the chat.
 type ChatHandler struct {
-	useCase   usecases.ChatUseCase
-	wsHandler *ws.WSHandler
+	useCase     usecases.ChatUseCase
+	connManager *ws.ConnectionManager
 }
 
 // NewChatHandler creates a new ChatHandler.
-func NewChatHandler(useCase usecases.ChatUseCase, wsHandler *ws.WSHandler) *ChatHandler {
+func NewChatHandler(useCase usecases.ChatUseCase, connManager *ws.ConnectionManager) *ChatHandler {
 	return &ChatHandler{
-		useCase:   useCase,
-		wsHandler: wsHandler,
+		useCase:     useCase,
+		connManager: connManager,
 	}
 }
 
@@ -29,9 +29,9 @@ func NewChatHandler(useCase usecases.ChatUseCase, wsHandler *ws.WSHandler) *Chat
 func (h *ChatHandler) ServeWS(c *fiber.Ctx) error {
 	return websocket.New(func(conn *websocket.Conn) {
 		// Create a new client from the WebSocket connection.
-		client := ws.NewClient(conn, h.wsHandler)
-		h.wsHandler.RegisterClient(client)
-		defer h.wsHandler.UnregisterClient(client)
+		client := ws.NewClient(conn, h.connManager)
+		h.connManager.RegisterClient(client)
+		defer h.connManager.UnregisterClient(client)
 
 		// --- OnConnect ---
 		// Notify the use case that a user has connected and get chat history.
