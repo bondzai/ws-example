@@ -3,11 +3,10 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"time"
-
-	"github.com/gofiber/contrib/websocket"
 )
 
 // Room holds a set of clients in a chat room.
@@ -17,11 +16,13 @@ type Room struct {
 
 // Hub maintains the set of active rooms and broadcasts messages to rooms.
 type Hub struct {
-	Rooms      map[string]*Room
-	Register   chan *Client
-	Unregister chan *Client
-	Broadcast  chan RoomMessage
-	mu         sync.Mutex
+	Rooms         map[string]*Room
+	ClientsByID   map[string]*Client // Added for direct messaging
+	Register      chan *Client
+	Unregister    chan *Client
+	Broadcast     chan RoomMessage
+	DirectMessage chan DirectMessage // Added for sending to a specific client
+	mu            sync.Mutex
 }
 
 // RoomMessage is a message to be broadcast to a specific room.
@@ -30,13 +31,21 @@ type RoomMessage struct {
 	Message []byte
 }
 
+// DirectMessage is a message to be sent to a specific client.
+type DirectMessage struct {
+	ClientID string
+	Message  []byte
+}
+
 // NewHub creates a new Hub instance.
 func NewHub() *Hub {
 	return &Hub{
-		Rooms:      make(map[string]*Room),
-		Register:   make(chan *Client),
-		Unregister: make(chan *Client),
-		Broadcast:  make(chan RoomMessage),
+		Rooms:         make(map[string]*Room),
+		ClientsByID:   make(map[string]*Client),
+		Register:      make(chan *Client),
+		Unregister:    make(chan *Client),
+		Broadcast:     make(chan RoomMessage),
+		DirectMessage: make(chan DirectMessage),
 	}
 }
 
@@ -46,12 +55,15 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.Register:
 			h.mu.Lock()
+			// Register client to a room
 			room, ok := h.Rooms[client.RoomID]
 			if !ok {
 				room = &Room{Clients: make(map[*Client]bool)}
 				h.Rooms[client.RoomID] = room
 			}
 			room.Clients[client] = true
+			// Register client by ID for direct messaging
+			h.ClientsByID[client.ID] = client
 			h.mu.Unlock()
 
 		case client := <-h.Unregister:
@@ -65,20 +77,23 @@ func (h *Hub) Run() {
 					}
 				}
 			}
+			// Unregister client by ID
+			delete(h.ClientsByID, client.ID)
 			h.mu.Unlock()
 
 		case roomMsg := <-h.Broadcast:
 			h.mu.Lock()
-			room, ok := h.Rooms[roomMsg.RoomID]
-			if ok {
+			if room, ok := h.Rooms[roomMsg.RoomID]; ok {
 				for client := range room.Clients {
-					select {
-					case client.Send <- roomMsg.Message:
-					default:
-						close(client.Send)
-						delete(room.Clients, client)
-					}
+					client.SendMessage(roomMsg.Message)
 				}
+			}
+			h.mu.Unlock()
+
+		case directMsg := <-h.DirectMessage:
+			h.mu.Lock()
+			if client, ok := h.ClientsByID[directMsg.ClientID]; ok {
+				client.SendMessage(directMsg.Message)
 			}
 			h.mu.Unlock()
 		}
@@ -94,25 +109,20 @@ type WSConfig struct {
 	BufferSize     int
 	EnableAutoSync bool
 	SyncChannel    string
-	MessageBroker  MessageBrokerConfig
 }
 
-// WSHandler provides customizable callbacks and a hub for WebSocket events.
+// WSHandler provides a hub for WebSocket connections and acts as a broadcaster.
 type WSHandler struct {
-	hub       *Hub
-	config    WSConfig
-	broker    MessageBroker
-	OnConnect func(c *Client)
-	OnMessage func(c *Client, messageType int, data []byte)
-	OnClose   func(c *Client)
+	hub    *Hub
+	config WSConfig
+	broker MessageBroker
 }
 
 // SyncMessage defines the structure for synchronization messages.
 type SyncMessage struct {
-	ClientID string `json:"client_id"`
+	ClientID string `json:"client_id,omitempty"` // Can be empty if it's a room broadcast
 	RoomID   string `json:"room_id"`
 	Data     []byte `json:"data"`
-	Type     string `json:"type"`
 }
 
 // NewWSHandler initializes a new WSHandler with its hub and message broker.
@@ -162,54 +172,56 @@ func (h *WSHandler) handleSyncMessage(data []byte) {
 		return
 	}
 
-	h.hub.mu.Lock()
-	defer h.hub.mu.Unlock()
-
-	// Forward message to all clients in the same room.
-	if room, ok := h.hub.Rooms[syncMsg.RoomID]; ok {
-		for client := range room.Clients {
-			client.SendMessage(syncMsg.Data)
-		}
+	// If ClientID is present, it's a direct message. Otherwise, broadcast to the room.
+	if syncMsg.ClientID != "" {
+		h.hub.DirectMessage <- DirectMessage{ClientID: syncMsg.ClientID, Message: syncMsg.Data}
+	} else {
+		h.hub.Broadcast <- RoomMessage{RoomID: syncMsg.RoomID, Message: syncMsg.Data}
 	}
 }
 
-// Handler returns a Fiber-compatible WebSocket handler function.
-func (h *WSHandler) Handler(c *websocket.Conn) {
-	client := NewClient(c, h)
+// RegisterClient registers a client with the hub.
+func (h *WSHandler) RegisterClient(client *Client) {
 	h.hub.Register <- client
-	if h.OnConnect != nil {
-		h.OnConnect(client)
-	}
+}
 
-	client.Listen()
+// UnregisterClient unregisters a client from the hub.
+func (h *WSHandler) UnregisterClient(client *Client) {
+	h.hub.Unregister <- client
 }
 
 // BroadcastToRoom sends a message to all clients in a specific room.
+// If auto-sync is enabled, it publishes the message to the message broker.
 func (h *WSHandler) BroadcastToRoom(roomID string, message []byte) {
-	h.hub.Broadcast <- RoomMessage{RoomID: roomID, Message: message}
+	if h.config.EnableAutoSync {
+		syncMsg := SyncMessage{RoomID: roomID, Data: message}
+		if err := h.broker.Publish(context.Background(), h.config.SyncChannel, syncMsg); err != nil {
+			log.Printf("Failed to publish sync message: %v", err)
+		}
+	} else {
+		h.hub.Broadcast <- RoomMessage{RoomID: roomID, Message: message}
+	}
 }
 
-// Broadcast sends a message to all connected clients.
-func (h *WSHandler) Broadcast(message []byte) {
-	h.hub.Broadcast <- RoomMessage{RoomID: "all", Message: message}
-}
-
-// SyncMessage publishes a synchronization message using the configured message broker.
-func (h *WSHandler) SyncMessage(ctx context.Context, sender *Client, message []byte) {
-	if !h.config.EnableAutoSync {
-		return
+// SendMessage sends a message directly to a specific client by their ID.
+func (h *WSHandler) SendMessage(clientID string, message []byte) error {
+	if h.config.EnableAutoSync {
+		syncMsg := SyncMessage{ClientID: clientID, RoomID: "", Data: message} // RoomID can be empty
+		if err := h.broker.Publish(context.Background(), h.config.SyncChannel, syncMsg); err != nil {
+			log.Printf("Failed to publish direct sync message: %v", err)
+			return err
+		}
+	} else {
+		// Check if client is local before sending
+		h.hub.mu.Lock()
+		_, ok := h.hub.ClientsByID[clientID]
+		h.hub.mu.Unlock()
+		if !ok {
+			return errors.New("client not found")
+		}
+		h.hub.DirectMessage <- DirectMessage{ClientID: clientID, Message: message}
 	}
-
-	syncMsg := SyncMessage{
-		ClientID: sender.ID,
-		RoomID:   sender.RoomID,
-		Data:     message,
-		Type:     "message",
-	}
-
-	if err := h.broker.Publish(ctx, h.config.SyncChannel, syncMsg); err != nil {
-		log.Printf("Failed to publish sync message: %v", err)
-	}
+	return nil
 }
 
 // Close closes the WebSocket handler and message broker

@@ -31,6 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
+	defer mongoClient.Disconnect(context.Background())
 
 	err = mongoClient.Ping(context.Background(), nil)
 	if err != nil {
@@ -47,16 +48,16 @@ func main() {
 		ws.WithAutoSync(true),
 	)
 
-	_ = usecases.NewChatUseCase(userRepository, messageRepository, wsHandler)
+	chatUseCase := usecases.NewChatUseCase(userRepository, messageRepository, wsHandler)
 
-	chatHandler := handlers.NewChatHandler(wsHandler)
+	chatHandler := handlers.NewChatHandler(chatUseCase, wsHandler)
 
 	app := infrastructures.NewFiber()
 
 	v1 := app.Group("/api/v1")
 	{
 		wsGroup := v1.Group("/ws")
-		wsGroup.Get("/chat", chatHandler)
+		wsGroup.Get("/chat", chatHandler.ServeWS)
 	}
 
 	log.Printf("Server is running on port: %s", conf.HttpPort)

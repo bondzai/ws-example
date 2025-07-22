@@ -37,17 +37,13 @@ func NewClient(conn *websocket.Conn, handler *WSHandler) *Client {
 
 // Listen starts the read and write pumps.
 func (c *Client) Listen() {
-	go c.writePump()
-	c.readPump()
+	go c.WritePump()
 }
 
 // readPump continuously reads messages from the WebSocket connection.
 func (c *Client) readPump() {
 	defer func() {
-		if c.handler.OnClose != nil {
-			c.handler.OnClose(c)
-		}
-		c.handler.hub.Unregister <- c
+		c.handler.UnregisterClient(c)
 		c.Conn.Close()
 	}()
 
@@ -67,17 +63,16 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-
-		// Always delegate the message to the OnMessage handler (the ChatUseCase).
-		// The use case is responsible for saving the message and deciding how to broadcast it.
-		if c.handler.OnMessage != nil {
-			c.handler.OnMessage(c, messageType, message)
-		}
+		// The message processing is now handled in the ChatHandler,
+		// so we remove the call to OnMessage from here.
+		// Instead, the handler's ServeWS method will read messages.
+		log.Printf("Received message type %d from %s", messageType, c.ID)
+		_ = message
 	}
 }
 
-// writePump sends messages from the send channel and periodically pings the client.
-func (c *Client) writePump() {
+// WritePump sends messages from the send channel and periodically pings the client.
+func (c *Client) WritePump() {
 	pingInterval := c.handler.config.PingInterval
 	if pingInterval == 0 {
 		pingInterval = 30 * time.Second
